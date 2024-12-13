@@ -1,0 +1,142 @@
+#include <PulseSensorPlayground.h>
+#include <Servo.h>
+
+const int PulseWire = A0;    // PulseSensor connected to ANALOG PIN A0
+const int greenLED = 13;     // Green LED connected to pin 13
+const int redLED = 12;       // Red LED connected to pin 12
+const int servoPin = 6;      // Servo motor connected to pin 9
+
+int Threshold = 500;         // BPM threshold
+PulseSensorPlayground pulseSensor;
+Servo redServo;
+
+unsigned long greenLEDStartTime = 0;
+const unsigned long greenLEDDuration = 30000;  // 30 seconds for green LED
+unsigned long greenLEDBlinkInterval = 500;     // Green LED blink interval (ms)
+unsigned long lastGreenLEDBlink = 0;
+
+unsigned long redLEDStartTime = 0;
+unsigned long redLEDDuration = 0; // Red LED and servo active duration
+
+int beatCount = 0;  // To count beats in 30 seconds
+int totalBPM = 0;   // To accumulate BPM values for averaging
+bool greenLEDon = false;
+bool greenLEDState = false;
+bool redLEDon = false;
+
+// Servo breathing motion variables
+int servoAngle = 115;    // Start at midpoint between min and max
+bool increasing = true;  // Servo movement direction
+unsigned long lastServoMove = 0;
+const unsigned long servoMoveInterval = 80;   // Delay of 80ms for breathing motion
+
+void setup() {
+  pinMode(greenLED, OUTPUT);
+  pinMode(redLED, OUTPUT);
+  redServo.attach(servoPin);
+  Serial.begin(115200);
+
+  pulseSensor.analogInput(PulseWire);
+  pulseSensor.setThreshold(Threshold);
+
+  if (pulseSensor.begin()) {
+    Serial.println("PulseSensor initialized");
+  } else {
+    Serial.println("Error initializing PulseSensor");
+  }
+
+  redServo.write(servoAngle);  // Set servo to initial position
+}
+
+void loop() {
+  // Ignore heartbeats if red LED is ON and servo is running
+  if (redLEDon) {
+    handleRedLEDBreathingMotion();
+    return;
+  }
+
+  int myBPM = pulseSensor.getBeatsPerMinute();
+
+  // Detect heartbeat and start green LED blinking
+  if (pulseSensor.sawStartOfBeat()) {
+    beatCount++;
+    totalBPM += myBPM;
+
+    if (!greenLEDon) {
+      greenLEDon = true;
+      greenLEDStartTime = millis();
+      Serial.println("Green LED blinking: Starting BPM calculation...");
+    }
+
+    Serial.print("Heartbeat detected, BPM: ");
+    Serial.println(myBPM);
+  }
+
+  // Blink the green LED while calculating BPM
+  if (greenLEDon) {
+    if (millis() - lastGreenLEDBlink >= greenLEDBlinkInterval) {
+      greenLEDState = !greenLEDState;
+      digitalWrite(greenLED, greenLEDState ? HIGH : LOW);
+      lastGreenLEDBlink = millis();
+    }
+
+    // Turn off green LED after 30 seconds and calculate average BPM
+    if (millis() - greenLEDStartTime > greenLEDDuration) {
+      greenLEDon = false;
+      digitalWrite(greenLED, LOW);
+
+      int averageBPM = beatCount > 0 ? totalBPM / beatCount : 0;
+      Serial.print("Average BPM: ");
+      Serial.println(averageBPM);
+
+      // Determine servo duration based on average BPM range
+      if (averageBPM >= 60 && averageBPM < 100) {
+        redLEDDuration = 30000;  // 30 seconds
+      } else if (averageBPM >= 100 && averageBPM <= 150) {
+        redLEDDuration = 60000;  // 60 seconds
+      } else if (averageBPM > 150) {
+        redLEDDuration = 90000;  // 90 seconds
+      } else {
+        Serial.println("Average BPM below 60: No action taken.");
+        return;  // Ignore if average BPM is below 60
+      }
+
+      Serial.print("Red LED and Servo will run for: ");
+      Serial.print(redLEDDuration / 1000); // Convert to seconds
+      Serial.println(" seconds");
+
+      redLEDon = true;
+      redLEDStartTime = millis();
+      digitalWrite(redLED, HIGH);
+      Serial.println("Red LED ON: Servo breathing motion started");
+
+      // Reset counters for next measurement
+      beatCount = 0;
+      totalBPM = 0;
+    }
+  }
+}
+
+// Handle red LED and servo breathing motion
+void handleRedLEDBreathingMotion() {
+  // Keep the red LED on for the determined duration
+  if (millis() - redLEDStartTime < redLEDDuration) {
+    if (millis() - lastServoMove >= servoMoveInterval) {
+      // Mimic breathing motion with servo (constrained to 100-130 degrees)
+      if (increasing) {
+        servoAngle++;
+        if (servoAngle >= 130) increasing = false; // Reverse at max angle
+      } else {
+        servoAngle--;
+        if (servoAngle <= 100) increasing = true;  // Reverse at min angle
+      }
+      redServo.write(servoAngle);
+      lastServoMove = millis();
+    }
+  } else {
+    // Turn off red LED after duration
+    redLEDon = false;
+    digitalWrite(redLED, LOW);
+    Serial.println("Red LED OFF: Servo stops at final position");
+  }
+}
